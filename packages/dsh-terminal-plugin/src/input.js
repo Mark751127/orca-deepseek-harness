@@ -17,6 +17,18 @@ export class InputClosed extends Error {
   }
 }
 
+/**
+ * The composer was suspended so a higher-priority prompt (approval, question)
+ * can read the next line. Callers must `releasePreempt()` and then
+ * `waitForPreemptToFinish()` before starting another composer question.
+ */
+export class InputPreempted extends Error {
+  constructor() {
+    super('input preempted')
+    this.name = 'InputPreempted'
+  }
+}
+
 export class TerminalInput {
   constructor({ input = process.stdin, output = process.stdout, completer, exitWindowMs = 1500 } = {}) {
     this.input = input
@@ -134,24 +146,73 @@ export class TerminalInput {
 
   async question(prompt, { context = 'input', trim = false } = {}) {
     if (this.closed) throw new InputClosed()
+    // A live composer holds the only readline question. Approvals and other
+    // prompts must take that slot, or the answer is submitted to the model
+    // and the approval waits forever.
+    if (context !== 'composer' && this.current?.context === 'composer') {
+      await this.preemptActiveComposer()
+    }
     if (context === 'composer') this.composerPrompt = prompt
     const abort = new AbortController()
     this.current = { abort, context }
+    this.preempting = false
+    if (context === 'composer' && this.suspendedComposer) {
+      const saved = this.suspendedComposer
+      this.suspendedComposer = undefined
+      queueMicrotask(() => {
+        if (this.current?.context === 'composer' && saved) this.rl.write(saved)
+      })
+    }
     try {
       const value = this.readlineInput.expand(await this.rl.question(prompt, { signal: abort.signal }))
       return trim ? value.trim() : value
     } catch (error) {
-      if (error instanceof InputInterrupted || error instanceof InputClosed) throw error
+      if (error instanceof InputInterrupted || error instanceof InputClosed || error instanceof InputPreempted) throw error
       if (error?.name === 'AbortError') {
         const reason = abort.signal.reason
-        if (reason instanceof InputClosed) throw reason
-        if (reason instanceof InputInterrupted) throw reason
+        if (reason instanceof InputClosed || reason instanceof InputInterrupted || reason instanceof InputPreempted) throw reason
         throw new InputInterrupted(context)
       }
       throw error
     } finally {
       if (this.current?.abort === abort) this.current = undefined
+      if (!this.preempting && this.preemptDone) {
+        const done = this.preemptDone
+        this.preemptDone = undefined
+        done()
+      }
     }
+  }
+
+  /**
+   * Abort the in-flight composer question and wait until the caller releases
+   * readline. The composer promise rejects with InputPreempted (not a user
+   * interrupt, so it does not arm exit or cancel the turn).
+   */
+  preemptActiveComposer() {
+    const current = this.current
+    this.suspendedComposer = this.rl.line ?? ''
+    this.preempting = true
+    this.menu.close()
+    return new Promise(resolve => {
+      this.preemptResume = resolve
+      current.abort.abort(new InputPreempted())
+    })
+  }
+
+  /** Let the preempted prompt acquire readline. Called by the composer loop. */
+  releasePreempt() {
+    const resume = this.preemptResume
+    this.preemptResume = undefined
+    resume?.()
+  }
+
+  /** Resolves once the preempting prompt has finished and readline is idle. */
+  waitForPreemptToFinish() {
+    if (!this.preempting) return Promise.resolve()
+    return new Promise(resolve => {
+      this.preemptDone = resolve
+    })
   }
 
   async multiline(prompt = '› ', continuation = '· ') {

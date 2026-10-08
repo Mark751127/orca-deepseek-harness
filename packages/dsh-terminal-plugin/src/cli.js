@@ -1,5 +1,6 @@
 import { Renderer } from './renderer.js'
-import { TerminalInput, InputClosed, InputInterrupted } from './input.js'
+import { TerminalInput, InputClosed, InputInterrupted, InputPreempted } from './input.js'
+import { createPiFrontend } from './pi-frontend.js'
 import { DshRpcClient } from './rpc-client.js'
 import { SessionController } from './session-controller.js'
 import { CommandRouter } from './commands.js'
@@ -18,13 +19,27 @@ export async function runCli(options, io = {}) {
     return 0
   }
 
-  const renderer = new Renderer({
-    output,
-    errorOutput,
-    verbose: options.verbose,
-    debug: options.debug,
-  })
+  const interactive = Boolean(inputStream.isTTY && output.isTTY)
+  let renderer
   let terminalInput
+  if (interactive) {
+    const frontend = createPiFrontend({
+      input: inputStream,
+      output,
+      errorOutput,
+      verbose: options.verbose,
+      debug: options.debug,
+    })
+    renderer = frontend.renderer
+    terminalInput = frontend.input
+  } else {
+    renderer = new Renderer({
+      output,
+      errorOutput,
+      verbose: options.verbose,
+      debug: options.debug,
+    })
+  }
   let host
   let client
   let controller
@@ -49,7 +64,7 @@ export async function runCli(options, io = {}) {
   try {
     let baseUrl = options.connect
     if (!baseUrl) {
-      terminalInput = new TerminalInput({ input: inputStream, output })
+      terminalInput ??= new TerminalInput({ input: inputStream, output })
       renderer.activityStart('正在启动 DeepSeek Harness')
       const executable = await ensureOfficialDsh({ input: terminalInput, renderer })
       const env = {
@@ -145,10 +160,16 @@ export async function runCli(options, io = {}) {
           Promise.resolve()
             .then(() => controller.send(text))
             .catch(error => {
-              if (!terminalInput.closed) renderer.error(formatError(error))
+              if (terminalInput.closed || !shouldSurfaceSendError(error)) return
+              renderer.error(formatError(error))
             })
         }
       } catch (error) {
+        if (error instanceof InputPreempted) {
+          terminalInput.releasePreempt()
+          await terminalInput.waitForPreemptToFinish()
+          continue
+        }
         if (error instanceof InputInterrupted) {
           renderer.line('')
           if (terminalInput.exitArmed) renderer.notice('再按一次 Ctrl+C 退出')
@@ -168,6 +189,10 @@ export async function runCli(options, io = {}) {
     process.off('SIGTERM', onSigterm)
     await close()
   }
+}
+
+export function shouldSurfaceSendError(error) {
+  return !error?.displayed
 }
 
 function formatError(error) {

@@ -52,3 +52,9 @@ test('CLI options parse values, equals syntax, and trailing prompt', () => {
 test('invalid approval policy is rejected', () => {
   assert.throws(() => parseCliOptions(['--approval', 'always']), /ask、allow 或 deny/)
 })
+
+test('resume id is preserved for dsh cli --resume', () => {
+  const options = parseCliOptions(['--resume', 'session-91e495b8', '--approval', 'ask'])
+  assert.equal(options.resume, 'session-91e495b8')
+  assert.equal(options.approvalPolicy, 'ask')
+})

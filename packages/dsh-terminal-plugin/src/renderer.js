@@ -610,14 +610,66 @@ function readViewSummary(view) {
 function diffCardLines(view, { maxFiles = 5 } = {}) {
   const candidate = view?.view ?? view
   if (candidate?.card !== 'diff' || !Array.isArray(candidate.diffs)) return []
-  const lines = candidate.diffs.slice(0, maxFiles).map(diff => {
+  const lines = []
+  for (const diff of candidate.diffs.slice(0, maxFiles)) {
     const newLines = typeof diff.newText === 'string' ? diff.newText.split('\n').length : 0
-    if (diff.oldText === null || diff.oldText === undefined) return `✎ ${diff.path}（新建 ${newLines} 行）`
-    const oldLines = String(diff.oldText).split('\n').length
-    return `✎ ${diff.path}（-${oldLines} +${newLines} 行）`
-  })
+    if (diff.oldText === null || diff.oldText === undefined) lines.push(`✎ ${diff.path}（新建 ${newLines} 行）`)
+    else {
+      const oldLines = String(diff.oldText).split('\n').length
+      lines.push(`✎ ${diff.path}（-${oldLines} +${newLines} 行）`)
+    }
+    lines.push(...unifiedDiff(diff.oldText, diff.newText).slice(0, 40))
+  }
   if (candidate.diffs.length > maxFiles) lines.push(`… 共 ${candidate.diffs.length} 个文件`)
   return lines
+}
+
+/** Line-oriented unified diff. Added/removed rows use `+ ` / `- ` so cards show the patch, not only a count. */
+export function unifiedDiff(oldText, newText) {
+  if (oldText == null) {
+    return String(newText ?? '').replace(/\n$/, '').split('\n').filter(line => line !== '').map(line => `+ ${line}`)
+  }
+  const a = String(oldText).replace(/\n$/, '').split('\n')
+  const b = String(newText ?? '').replace(/\n$/, '').split('\n')
+  if (a.length > 200 || b.length > 200) {
+    return [
+      ...a.slice(0, 20).filter(line => line !== '').map(line => `- ${line}`),
+      ...b.slice(0, 20).filter(line => line !== '').map(line => `+ ${line}`),
+    ]
+  }
+  const n = a.length
+  const m = b.length
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const out = []
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      if (a[i] !== '') out.push(`  ${a[i]}`)
+      i += 1
+      j += 1
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      if (a[i] !== '') out.push(`- ${a[i]}`)
+      i += 1
+    } else {
+      if (b[j] !== '') out.push(`+ ${b[j]}`)
+      j += 1
+    }
+  }
+  while (i < n) {
+    if (a[i] !== '') out.push(`- ${a[i]}`)
+    i += 1
+  }
+  while (j < m) {
+    if (b[j] !== '') out.push(`+ ${b[j]}`)
+    j += 1
+  }
+  return out
 }
 
 function summarizeToolResult(text, view, verbose) {

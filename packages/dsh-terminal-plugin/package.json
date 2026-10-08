@@ -31,6 +31,9 @@
     "terminal"
   ],
   "license": "MIT",
+  "dependencies": {
+    "@earendil-works/pi-tui": "0.80.7"
+  },
   "publishConfig": {
     "access": "public"
   }
