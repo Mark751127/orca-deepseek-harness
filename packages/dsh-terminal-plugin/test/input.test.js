@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
-import { TerminalInput, InputInterrupted, InputClosed } from '../src/input.js'
+import { TerminalInput, InputInterrupted, InputClosed, InputPreempted } from '../src/input.js'
 
 function createInput(options = {}) {
   const input = new PassThrough()
@@ -98,5 +98,21 @@ test('Orca-style bracketed paste submits one exact multiline composer value', as
   input.write('\x1b[200~first line\nsecond line\nTASK: finish\x1b[201~')
   input.write('\r')
   assert.equal(await submitted, 'first line\nsecond line\nTASK: finish')
+  terminal.close()
+})
+
+test('approval confirm preempts a live composer instead of queueing behind it', async () => {
+  const { input, terminal } = createInput()
+  const composer = terminal.multiline('› ', '· ').catch(error => error)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(terminal.current?.context, 'composer')
+  const confirm = terminal.confirm('允许这次操作吗？', { defaultValue: false, context: 'approval' })
+  const composerError = await composer
+  assert.ok(composerError instanceof InputPreempted)
+  assert.equal(terminal.exitArmed, false)
+  terminal.releasePreempt()
+  await new Promise(resolve => setImmediate(resolve))
+  input.write('y\n')
+  assert.equal(await confirm, true)
   terminal.close()
 })

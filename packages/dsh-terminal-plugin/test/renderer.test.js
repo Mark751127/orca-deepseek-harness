@@ -105,6 +105,9 @@ test('diff card renders per-file line deltas', () => {
   })
   assert.match(output.text, /✎ src\/a\.js（-2 \+3 行）/)
   assert.match(output.text, /✎ src\/b\.js（新建 2 行）/)
+  assert.match(output.text, /\+ c/)
+  assert.match(output.text, /\+ x/)
+  assert.match(output.text, /\+ y/)
 })
 
 test('subagent list renders activity, mode, label, and diagnostic rows', () => {

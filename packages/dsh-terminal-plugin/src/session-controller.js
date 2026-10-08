@@ -435,6 +435,9 @@ export class SessionController extends EventEmitter {
       case 'host/agent-error': {
         this.running = false
         const error = new Error(frame.message)
+        // The in-flight send() rejects with this same error. Mark it so the
+        // CLI does not print the message a second time and stall the next prompt.
+        error.displayed = true
         this.renderer.error(`Agent 错误：${frame.message}`)
         this.rejectActive(error)
         break
@@ -796,10 +799,14 @@ export class SessionController extends EventEmitter {
         }
         break
       case 'reasoning-delta':
-        if (chunk.text) this.renderer.reasoningPulse()
+        if (chunk.text) {
+          if (typeof this.renderer.reasoningDelta === 'function') this.renderer.reasoningDelta(chunk.text)
+          else this.renderer.reasoningPulse()
+        }
         break
       case 'usage':
         if (this.activeTurn) this.activeTurn.stepUsage.set(key, chunk.usage)
+        this.renderer.noteUsage?.(chunk.usage)
         break
       default:
         break
